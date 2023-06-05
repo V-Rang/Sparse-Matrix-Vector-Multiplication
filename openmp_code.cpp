@@ -19,6 +19,34 @@
 
 using namespace std;
 
+struct indice_maker //structure such that arr[n] = n, without explicitly storing an array of size n. 
+{
+    int val;
+    
+    // typedef indice_maker self_type;
+
+    inline indice_maker(int value): val(value) {};
+
+    inline int operator[](int n)
+    {
+        return val+n;
+    }
+
+};
+
+// struct example
+// {
+//     int val;
+//     typedef example self_type;
+
+//     inline example(int value): val(value) {};
+
+//     inline int operator[](int n)
+//     {
+//         return val+n;
+//     }
+// };
+
 struct Cputimer
 {
     double start;
@@ -40,6 +68,11 @@ struct Cputimer
     }
 };
 
+struct thread_coord
+{
+    int x,y; //each thread will have a x and y coordinate when it traverses the grid of merge arrays.
+};
+
 void sorter_result(int size_x, int *x, int *y, double *z, int *sorted_x, int *sorted_y, double *sorted_z)
 {
     int *idx = new int[size_x];
@@ -59,6 +92,86 @@ void sorter_result(int size_x, int *x, int *y, double *z, int *sorted_x, int *so
     idx = nullptr;
 }
 
+
+void thread_start_end_coordinates(int diagonal, int *a, indice_maker b, int num_rows, int nnz, thread_coord &thread)
+{
+    int x_min = max(diagonal-nnz,0);
+    int x_max = min(diagonal,num_rows);
+
+    while(x_min < x_max)
+    {
+        int x_pivot = (x_min + x_max) >> 1;
+        if(a[x_pivot] <= b[diagonal-x_pivot-1])
+        {
+            x_min = x_pivot + 1;
+        }
+        else
+        {
+            x_max = x_pivot;
+        }
+    }
+    thread.x = min(x_min,num_rows);
+    thread.y = diagonal - x_min;
+}
+
+void merge_spmv(int num_threads, int *row_end_offsets, int *col_ind, double *values, double *x_vec, double *y_vec, int no_rows, int nnz)
+{
+    int rco[256];
+    double vco[256];
+    
+    #pragma omp parallel for schedule(static) num_threads(num_threads)
+    for(int tid=0;tid<num_threads;tid++)
+    {
+        indice_maker nnz_indices(0);
+
+        int num_merge_items = no_rows + nnz;
+        int items_per_thread = (num_merge_items + num_threads - 1)/num_threads;
+
+
+        thread_coord tc;
+        thread_coord tc_end;
+
+        int start_diagonal = min(items_per_thread*tid, num_merge_items);
+        int end_diagonal = min(start_diagonal + items_per_thread,num_merge_items);
+
+      
+
+        thread_start_end_coordinates(start_diagonal,row_end_offsets,nnz_indices,no_rows,nnz,tc);
+        thread_start_end_coordinates(end_diagonal,row_end_offsets,nnz_indices,no_rows,nnz,tc_end);
+
+
+        for(;tc.x<tc_end.x;++tc.x)
+        {
+            double rt = 0;
+            for(;tc.y<row_end_offsets[tc.x];++tc.y)
+            {
+                rt += values[tc.y] * x_vec[col_ind[tc.y]];
+            }
+            y_vec[tc.x] = rt;
+        }
+
+        double rt = 0;
+
+        for(;tc.y<tc_end.y;++tc.y)
+        {
+            rt += values[tc.y] * x_vec[col_ind[tc.y]];
+        }
+
+        rco[tid] = tc_end.x;
+        vco[tid] = rt;
+    }
+
+    for(int tid = 0; tid < num_threads-1;++tid)
+    {
+        if(rco[tid] < no_rows)  
+        {
+            y_vec[rco[tid]] += vco[tid];
+        }
+    }
+
+}
+
+
 int main()
 {
     int i,j,k;
@@ -70,7 +183,6 @@ int main()
     std::uniform_real_distribution<double>dist(minval,maxval);
 
     string filename = "tx2010.mtx"; // 1k X 1k
-    // int length_junk_text = 13;
 
     int no_rows,no_cols,nnz;
 
@@ -99,37 +211,37 @@ int main()
     int *col_ind = new (std::nothrow) int[nnz];
     double *values = new (std::nothrow)  double[nnz];
 
-    if(!row_ind)
-    {
-        printf("failed to allocate row_ind\n");
-        exit(1);
-    }
-    else
-    {
-        printf("succesfully allocated row_ind\n");
-    }
+    // if(!row_ind)
+    // {
+    //     printf("failed to allocate row_ind\n");
+    //     exit(1);
+    // }
+    // else
+    // {
+    //     printf("succesfully allocated row_ind\n");
+    // }
 
 
-    if(!col_ind)
-    {
-        printf("failed to allocate col_ind\n");
-        exit(1);
-    }
-    else
-    {
-        printf("succesfully allocated col_ind\n");
-    }
+    // if(!col_ind)
+    // {
+    //     printf("failed to allocate col_ind\n");
+    //     exit(1);
+    // }
+    // else
+    // {
+    //     printf("succesfully allocated col_ind\n");
+    // }
 
 
-    if(!values)
-    {
-        printf("failed to allocate values\n");
-        exit(1);
-    }
-    else
-    {
-        printf("succesfully allocated values\n");
-    }
+    // if(!values)
+    // {
+    //     printf("failed to allocate values\n");
+    //     exit(1);
+    // }
+    // else
+    // {
+    //     printf("succesfully allocated values\n");
+    // }
 
     // std::ofstream out_file;
     // out_file.open("test_data.mtx");
@@ -182,15 +294,15 @@ int main()
     // out_file.close();
 
     int *ro = new (std::nothrow) int[no_rows+1];  
-    if(!ro)
-    {
-        printf("failed to allocate row offset\n");
-        exit(1);
-    }
-    else
-    {
-        printf("succesfully allocated row offset\n");
-    } 
+    // if(!ro)
+    // {
+    //     printf("failed to allocate row offset\n");
+    //     exit(1);
+    // }
+    // else
+    // {
+    //     printf("succesfully allocated row offset\n");
+    // } 
 
     ro[0] = 0;
     ro[no_rows] = nnz;
@@ -204,48 +316,47 @@ int main()
     counter = nullptr;
 
     double *x_vec = new (std::nothrow) double[no_cols]; 
-    if(!x_vec)
-    {
-        printf("failed to allocate x_vec\n");
-        exit(1);
-    }
-    else
-    {
-        printf("succesfully allocated x_vec\n");
-    } 
+    // if(!x_vec)
+    // {
+    //     printf("failed to allocate x_vec\n");
+    //     exit(1);
+    // }
+    // else
+    // {
+    //     printf("succesfully allocated x_vec\n");
+    // } 
 
     for(i=0;i<no_cols;i++)
     {
-        x_vec[i] = dist(gen);
+        // x_vec[i] = dist(gen);
+        x_vec[i] = i+1;
         // cout << w << endl;
     }
 
     double *y_vec = new (std::nothrow) double[no_rows];
-    if(!y_vec)
-    {
-        printf("failed to allocate y_vec\n");
-        exit(1);
-    }
-    else
-    {
-        printf("succesfully allocated y_vec\n");
-    } 
+    // if(!y_vec)
+    // {
+    //     printf("failed to allocate y_vec\n");
+    //     exit(1);
+    // }
+    // else
+    // {
+    //     printf("succesfully allocated y_vec\n");
+    // } 
 
     double *y_vec_par = new (std::nothrow) double[no_rows];
-    if(!y_vec_par)
-    {
-        printf("failed to allocate y_vec_par\n");
-        exit(1);
-    }
-    else
-    {
-       printf("succesfully allocated y_vec_par\n");
-    } 
+    // if(!y_vec_par)
+    // {
+    //     printf("failed to allocate y_vec_par\n");
+    //     exit(1);
+    // }
+    // else
+    // {
+    //    printf("succesfully allocated y_vec_par\n");
+    // } 
 
     Cputimer timer;
 
-
-    // auto start = tic;
     timer.Start();
     for(int row=0;row<no_rows;row++)
     {
@@ -256,14 +367,12 @@ int main()
         }
     }
     timer.Stop();
-    // auto end = toc;
-    // cout<<"Time taken by serial code: "<<std::chrono::duration_cast<std::chrono::microseconds>(end-start).count()<< " microseconds."<<endl;
     cout << "Time taken by serial code: " << timer.EllapsedMicros() << " microseconds" << endl;
 
-    omp_set_num_threads(5);
+    int num_threads = 3;
+    omp_set_num_threads(num_threads);
     int row,nz;
     
-    // start = tic;
     timer.Start();
     #pragma omp parallel for private(row,nz) shared(y_vec_par,no_rows,ro,sorted_vals,x_vec,sorted_cols) default(none)
     for(row=0;row<no_rows;row++)
@@ -275,15 +384,19 @@ int main()
         }
     }
     timer.Stop();
-    // end = toc;
-    // cout<<"Time taken by parallel code: "<<std::chrono::duration_cast<std::chrono::microseconds>(end-start).count()<< " microseconds."<<endl;
     cout << "Time taken by parallel code: " << timer.EllapsedMicros() << " microseconds" << endl;
-    delete[] sorted_rows,sorted_cols,sorted_vals;x_vec,ro;
-    sorted_rows = nullptr;
-    sorted_cols = nullptr;
-    sorted_vals = nullptr;
-    x_vec = nullptr;
-    ro = nullptr;
+    
+    
+
+    double *y_vec_par_merge = new double[no_rows];
+    
+    timer.Start();
+    merge_spmv(num_threads,ro+1,sorted_cols,sorted_vals,x_vec,y_vec_par_merge,no_rows,nnz);
+    timer.Stop();
+    cout << "Time taken by parallel merge code: " << timer.EllapsedMicros() << " microseconds" << endl;
+
+
+   
 
     int n_diff = 0;
     vector<int>incorrect_index;
@@ -297,7 +410,7 @@ int main()
 
     }
 
-    printf("No of values that are different are %d\n",n_diff);
+    printf("No of values that are different for standard parallel case are %d\n",n_diff);
     printf("Values that are different =:\n");
 
     for(auto p: incorrect_index)
@@ -306,19 +419,43 @@ int main()
     }
 
 
-    delete[] y_vec,y_vec_par;
-    y_vec = nullptr;
+    delete[] y_vec_par;
     y_vec_par = nullptr;
 
-    // out_file.open("row_off.mtx");
-    // for(int i=0;i<no_rows+1;i++)
-    // {
-    //     out_file << ro[i] << endl;
-    // }
-    // out_file.close();
+    int n_diff2 = 0;
+    vector<int>incorrect_index2;
+    for(int i=0;i<no_rows;i++)
+    {
+        if(abs(y_vec_par_merge[i] - y_vec[i]) > 1e-4) 
+        {
+            n_diff2 += 1;
+            incorrect_index2.push_back(i);
+        }
+
+    }
+
+    printf("No of values that are different for merge case are %d\n",n_diff2);
+    printf("Values that are different =:\n");
+    for(auto p: incorrect_index2)
+    {
+        cout << p << " " << y_vec[p] << " " << y_vec_par_merge[p] << endl; 
+    }
 
 
-    printf("Reached here 1\n");
+    delete[] y_vec_par_merge,y_vec;
+    y_vec_par_merge=nullptr;
+    y_vec = nullptr;
+
+
+    delete[] sorted_rows,sorted_cols,sorted_vals;x_vec,ro;
+    sorted_rows = nullptr;
+    sorted_cols = nullptr;
+    sorted_vals = nullptr;
+    x_vec = nullptr;
+    ro = nullptr;
+
+
+    // printf("Reached end\n");
 
 
 
