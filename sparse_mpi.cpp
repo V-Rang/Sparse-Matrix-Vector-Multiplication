@@ -14,10 +14,36 @@
 
 using namespace std;
 
-int investigator(int *local_col_inds, int my_node, int total_nodes, int no_rows, int n_loc_vals,int *needed_vec_index, int *needed_vec_count, int *needed_vec_displ)
-{
+/*
+function serves the following purpose:
+Determine number of "additional" vector indicies that each node needs. i.e.
+For example in the following mat-vec:
+[[1,0,1,0]
+ [0,0,0,0]
+ [0,0,3,3]
+ [4,4,4,4]]
 
-    // int num_add_vectors_needed = investigator();
+ and
+ vector:
+ [1 2 3 4]
+
+ if we perform the above with 3 nodes, the vector indices are distributed as follows:
+ Node 0: 0,1
+ Node 1: 2,3
+ Node 2: _
+
+ the matrix values are distrbuted as follows:
+ Node 0: 1,1
+ Node 1: 3,3,4,4,4,4
+ Node 2: _
+
+ To perform its portion of the mat-vec, Node 0 needs the vector value at index 2 (to multiply with 1 in column 2).
+ Similarly, Node 1 needs the vector value at index 0 and 1 (to multiply with 4 in column 0 and 4 in column 1). 
+*/
+
+int investigator(int *local_col_inds, int my_node, int total_nodes, int no_rows, int n_loc_vals, int *needed_vec_count, int *needed_vec_displ)
+{
+    
     int gen_size = ceil((double)no_rows/total_nodes);
     int num_add_vectors_needed = 0;
     int local_int_index = my_node * gen_size;
@@ -31,16 +57,9 @@ int investigator(int *local_col_inds, int my_node, int total_nodes, int no_rows,
     {
         if( (local_col_inds[i] < local_int_index) || (local_col_inds[i] >= local_fin_index) )
         {
-
-            //determine - 1. index needed, proc that has the index. store both in seperate arrays.
-            needed_vec_index[temp_count] = local_col_inds[i];
-            temp_count += 1;
             int node_to_get_from = local_col_inds[i]/gen_size;
             needed_vec_count[node_to_get_from] += 1;
             num_add_vectors_needed += 1;
-            
-
-            //label needed from where and incerment the function return value
         }
     }
     
@@ -52,7 +71,11 @@ int investigator(int *local_col_inds, int my_node, int total_nodes, int no_rows,
     return num_add_vectors_needed;
 }
 
-
+/*
+The matrix market files are arranged in the format: row index | col index | value. These values are sorted in ascending order of column. However, to 
+create the row offset array, we need the indices and the matrix values to be rearranged to be sorted in ascending order of row. Following function
+receives three arrays - x, y and z and creates three arrays - sorted_x, sorted_y and sorted_z which are sorted in ascending order of values in column x.
+*/
 void sorter_result(int size_x, int *x, int *y, double *z, int *sorted_x, int *sorted_y, double *sorted_z)
 {
     int *idx = new int[size_x];
@@ -67,7 +90,6 @@ void sorter_result(int size_x, int *x, int *y, double *z, int *sorted_x, int *so
         sorted_z[i] = z[idx[i]];
 
     }
-
     delete idx;
     idx = nullptr;
 }
@@ -79,12 +101,12 @@ int main(int argc, char**argv)
     MPI_Comm_rank(MPI_COMM_WORLD,&my_node);
     MPI_Comm_size(MPI_COMM_WORLD,&total_nodes);
     
-   int n; //order of square matrix.
-    int p = total_nodes;
+//    int n; //order of square matrix.
+    // int p = total_nodes;
     double *x_glob; //global x of length n read in by proc 0, distributed to all the procs in x_loc (length = n/(p-1)).
     double *x_loc;
-    double *y_glob; //global y of length n of proc 0 to which all the procs return their local mat-vec result to.
-    double *y_loc;
+    // double *y_glob; //global y of length n of proc 0 to which all the procs return their local mat-vec result to.
+    // double *y_loc;
     int no_rows,no_cols,nnz;
     int *row_ind, *col_ind;
     double *values;
@@ -105,9 +127,8 @@ int main(int argc, char**argv)
 
     double *loc_result;
     double *glob_result; 
+    int *row_offset;
 
-
-        
     if(my_node == 0)
     {
         string filename = "./Matrix_Files/1138_bus.mtx"; // any file in matrix market format, tested matrices taken from UF Sparse matrix collection.
@@ -156,15 +177,12 @@ int main(int argc, char**argv)
         row_ind = nullptr;
         col_ind = nullptr;
         values = nullptr;
-    }
 
     // to be distributed: nrows, rowoffset_array, matrix_values_array, vector_array, col_ind_array.
 
     //constructing row offset array
-    int *row_offset;
-
-    if(my_node == 0)
-    {
+    // if(my_node == 0)
+    // {
         row_offset = new int[no_rows+1];
         int *counter = new int[no_rows];
         for(int i=0;i<no_rows;i++)
@@ -187,11 +205,8 @@ int main(int argc, char**argv)
 
         delete[] counter;
         counter = nullptr;
-    }
+        //constructing vector values
 
-    //constructing vector values
-    if(my_node == 0)
-    {
         x_glob = new double[no_cols];
         for(int i=0;i<no_cols;i++) x_glob[i] = i+1;
     }
@@ -217,8 +232,16 @@ int main(int argc, char**argv)
     if(my_node == 0)
     {
         gen_size = ceil((double)no_rows/total_nodes);
+        loc_size_last = no_rows - (total_nodes-1)*gen_size;
+        
         loc_size = gen_size;
         if(my_node == total_nodes-1) loc_size = no_rows - (total_nodes-1)*loc_size; 
+
+        if(loc_size_last < 0) 
+        {
+            printf("Wrong choice of input number of nodes\n");
+            exit(0);
+        }
 
         /*
         decide on how many vector values each node will have -> use to construct displacement array for each node -> scatterv values
@@ -237,11 +260,12 @@ int main(int argc, char**argv)
         for(int i=1; i<total_nodes; i++)
         {
             num_mat_col_values[i] = row_offset[num_vec_vals[i] + vec_vals_displ[i]] - row_offset[num_vec_vals[i-1] + vec_vals_displ[i-1]];
-        }
 
+        }
         mat_col_displ[0] = 0;
         for(int i=1;i<total_nodes;i++) mat_col_displ[i] = mat_col_displ[i-1] + num_mat_col_values[i-1];
 
+       
         // let every ndoe know how many values from - sorted_cols and sorted_vals will be sent to it.
         MPI_Scatter(num_mat_col_values,1,MPI_INT,&n_loc_vals,1,MPI_INT,0,MPI_COMM_WORLD);
         loc_col_inds = new int[n_loc_vals];
@@ -251,15 +275,24 @@ int main(int argc, char**argv)
 
         //send values from sorted_cols and sorted_vals to every node.
         MPI_Scatterv(sorted_cols,num_mat_col_values,mat_col_displ,MPI_INT,loc_col_inds,n_loc_vals,MPI_INT,0,MPI_COMM_WORLD);
-        MPI_Scatterv(sorted_vals,num_mat_col_values,mat_col_displ,MPI_DOUBLE,loc_mat_vals,n_loc_vals,MPI_DOUBLE,0,MPI_COMM_WORLD);
+        delete[] sorted_cols;
+        sorted_cols = nullptr;
 
+        MPI_Scatterv(sorted_vals,num_mat_col_values,mat_col_displ,MPI_DOUBLE,loc_mat_vals,n_loc_vals,MPI_DOUBLE,0,MPI_COMM_WORLD);
+        delete[] sorted_vals;
+        sorted_vals = nullptr;
+    
         //creating row_offset_vector corresponding to each node.
         loc_row_offset = new int[loc_size + 1];
         MPI_Scatterv(row_offset,num_vec_vals,vec_vals_displ,MPI_INT,loc_row_offset,loc_size,MPI_INT,0,MPI_COMM_WORLD);
+        delete[] row_offset;
+        row_offset = nullptr;
+
         loc_row_offset[loc_size] = n_loc_vals;
-       
         x_loc = new double[loc_size];
         MPI_Scatterv(x_glob,num_vec_vals,vec_vals_displ,MPI_DOUBLE,x_loc,loc_size,MPI_DOUBLE,0,MPI_COMM_WORLD);
+        delete[] x_glob;
+        x_glob = nullptr;
 
         //each node has -> loc_no_rows = local_size, loc_row_offset, loc_col_ind, loc_mat_vals, loc_vec_vals
         needed_vec_index = new int[n_loc_vals];
@@ -272,7 +305,41 @@ int main(int argc, char**argv)
         3. store the count of the number of indices that are needed from each node in needed_vec_count.
         4. create displacement array needed_vec_displ from the above needed_vec_count array.
         */
-        num_add_vectors_needed = investigator(loc_col_inds, my_node, total_nodes, no_rows, n_loc_vals, needed_vec_index, needed_vec_count, needed_vec_displ);
+
+        num_add_vectors_needed = investigator(loc_col_inds, my_node, total_nodes, no_rows, n_loc_vals, needed_vec_count, needed_vec_displ);
+         /*
+        loc_col_inds array needs to be modified to account for the shuffle in the x_loc that each node has. For example, if x_loc of node 1 is expected to be:
+        [1,2,3,4] and it initially had [3,4], then received [1,2] from node 0, the x_loc now looks like [3,4,1,2]. So, the column indices array needs to be
+        modified so it can multiply the correct values of the mat_val array with the x_loc values.
+        Every value loc_col_inds[i] is the index of x_glob that is expected to be multiplied by the mat_vals array.
+        To do the modification, we do the following steps:
+        1. for every  loc_col_inds[i], if the value was already in the x_loc (i.e. not received from any other node), we reduce the value by (my_node * loc_size).
+        This is because the values local to the node (original values in x_loc) are at the beginning of the x_loc array.
+        2. For other values, we determine the node from which the value was received from, then accordingly incrementing the value of loc_col_inds[i] by adding 
+        loc_size  (i.e, first move to end of original x_loc) + 
+        vec_vals_displ[sending_node] (i.e. how many values have to be recived before receiving values from this node) +
+        incremental counter (i.e. a temporary value that has to be incremented for every value that is received from this same sending node). 
+        */
+
+        int local_int_index = my_node * gen_size;
+        int local_fin_index = (my_node + 1)*gen_size;
+        int temp_num_vals_sent_by_node[total_nodes];
+        for(int i=0;i<total_nodes;i++) temp_num_vals_sent_by_node[i] = 0;
+    
+        for(int i=0;i<n_loc_vals;i++)
+        {    
+            if( (loc_col_inds[i] < local_int_index ) || ( loc_col_inds[i] >= local_fin_index ) )
+            {
+                int sending_node = loc_col_inds[i]/gen_size;
+                needed_vec_index[needed_vec_displ[sending_node] + temp_num_vals_sent_by_node[sending_node]] = loc_col_inds[i];
+                loc_col_inds[i] = loc_size  + needed_vec_displ[sending_node] + temp_num_vals_sent_by_node[sending_node];
+                temp_num_vals_sent_by_node[sending_node]++;
+            }
+            else
+            {
+                loc_col_inds[i] -= (my_node *gen_size);
+            }
+        }
 
         /*
         After determining number of indices that each node needs from every other node, we do a collective communication so that each node knows
@@ -314,38 +381,7 @@ int main(int argc, char**argv)
     
         MPI_Alltoallv(send_vec_vals,to_send_vec_count,to_send_vec_displ,MPI_DOUBLE,recv_array_pointer,needed_vec_count,needed_vec_displ,MPI_DOUBLE,MPI_COMM_WORLD);
 
-        /*
-        loc_col_inds array needs to be modified to account for the shuffle in the x_loc that each node has. For example, if x_loc of node 1 is expected to be:
-        [1,2,3,4] and it initially had [3,4], then received [1,2] from node 0, the x_loc now looks like [3,4,1,2]. So, the column indices array needs to be
-        modified so it can multiply the correct values of the mat_val array with the x_loc values.
-        Every value loc_col_inds[i] is the index of x_glob that is expected to be multiplied by the mat_vals array.
-        To do the modification, we do the following steps:
-        1. for every  loc_col_inds[i], if the value was already in the x_loc (i.e. not received from any other node), we reduce the value by (my_node * loc_size).
-        This is because the values local to the node (original values in x_loc) are at the beginning of the x_loc array.
-        2. For other values, we determine the node from which the value was received from, then accordingly incrementing the value of loc_col_inds[i] by adding 
-        loc_size  (i.e, first move to end of original x_loc) + 
-        vec_vals_displ[sending_node] (i.e. how many values have to be recived before receiving values from this node) +
-        incremental counter (i.e. a temporary value that has to be incremented for every value that is received from this same sending node). 
-        */
-
-        int local_int_index = my_node * gen_size;
-        int local_fin_index = (my_node + 1)*gen_size;
-        int temp_num_vals_sent_by_node[total_nodes];
-        for(int i=0;i<total_nodes;i++) temp_num_vals_sent_by_node[i] = 0;
-        
-        for(int i=0;i<n_loc_vals;i++)
-        {    
-            if( (loc_col_inds[i] < local_int_index ) || ( loc_col_inds[i] >= local_fin_index ) )
-            {
-                int sending_node = loc_col_inds[i]/gen_size;
-                loc_col_inds[i] = loc_size  + needed_vec_displ[sending_node] + temp_num_vals_sent_by_node[sending_node];
-                temp_num_vals_sent_by_node[sending_node]++;
-            }
-            else
-            {
-                loc_col_inds[i] -= (my_node *loc_size);
-            }
-        }
+       
 
         // compute mat-vec product
         loc_result = new double[loc_size];
@@ -360,6 +396,9 @@ int main(int argc, char**argv)
         glob_result = new double[no_rows];
 
         MPI_Gatherv(loc_result,loc_size,MPI_DOUBLE,glob_result,num_vec_vals,vec_vals_displ,MPI_DOUBLE,0,MPI_COMM_WORLD);  
+        delete[] loc_result;
+        loc_result = nullptr;
+
     }
     else
     {
@@ -386,7 +425,28 @@ int main(int argc, char**argv)
         MPI_Scatterv(x_glob,num_vec_vals,vec_vals_displ,MPI_DOUBLE,x_loc,loc_size,MPI_DOUBLE,0,MPI_COMM_WORLD);
 
         needed_vec_index = new int[n_loc_vals];
-        num_add_vectors_needed = investigator(loc_col_inds, my_node, total_nodes, no_rows, n_loc_vals, needed_vec_index, needed_vec_count, needed_vec_displ);
+
+        num_add_vectors_needed = investigator(loc_col_inds, my_node, total_nodes, no_rows, n_loc_vals, needed_vec_count, needed_vec_displ);
+        
+        int local_int_index = my_node * gen_size;
+        int local_fin_index = (my_node + 1)*gen_size;
+        int temp_num_vals_sent_by_node[total_nodes];
+        for(int i=0;i<total_nodes;i++) temp_num_vals_sent_by_node[i] = 0;
+    
+        for(int i=0;i<n_loc_vals;i++)
+        {    
+            if( (loc_col_inds[i] < local_int_index ) || ( loc_col_inds[i] >= local_fin_index ) )
+            {
+                int sending_node = loc_col_inds[i]/gen_size;
+                needed_vec_index[needed_vec_displ[sending_node] + temp_num_vals_sent_by_node[sending_node]] = loc_col_inds[i];
+                loc_col_inds[i] = loc_size  + needed_vec_displ[sending_node] + temp_num_vals_sent_by_node[sending_node];
+                temp_num_vals_sent_by_node[sending_node]++;
+            }
+            else
+            {
+                loc_col_inds[i] -= (my_node *gen_size);
+            }
+        }
 
         MPI_Alltoall(needed_vec_count,1,MPI_INT,to_send_vec_count,1,MPI_INT,MPI_COMM_WORLD);
                 
@@ -406,26 +466,7 @@ int main(int argc, char**argv)
         double* recv_array_pointer = x_loc + loc_size;
     
         MPI_Alltoallv(send_vec_vals,to_send_vec_count,to_send_vec_displ,MPI_DOUBLE,recv_array_pointer,needed_vec_count,needed_vec_displ,MPI_DOUBLE,MPI_COMM_WORLD);
-
-        int local_int_index = my_node * gen_size;
-        int local_fin_index = (my_node + 1)*gen_size;
-        int temp_num_vals_sent_by_node[total_nodes];
-        for(int i=0;i<total_nodes;i++) temp_num_vals_sent_by_node[i] = 0;
-
-        for(int i=0;i<n_loc_vals;i++)
-        {   
-            if( (loc_col_inds[i] < local_int_index ) || ( loc_col_inds[i] >= local_fin_index ) )
-            {
-                int sending_node = loc_col_inds[i]/gen_size;
-                loc_col_inds[i] = loc_size + needed_vec_displ[sending_node] + temp_num_vals_sent_by_node[sending_node];
-                temp_num_vals_sent_by_node[sending_node]++;
-            }
-            else
-            {
-                loc_col_inds[i] -= (my_node *loc_size);
-            }
-        }
-
+    
         loc_result = new double[loc_size];
         for(int i=0;i<loc_size;i++)
         {
@@ -437,37 +478,19 @@ int main(int argc, char**argv)
         } 
 
         MPI_Gatherv(loc_result,loc_size,MPI_DOUBLE,glob_result,num_vec_vals,vec_vals_displ,MPI_DOUBLE,0,MPI_COMM_WORLD);
+        delete[] loc_result;
+        loc_result = nullptr;
 
     }
     if(my_node == 0)
     {
-        delete[] sorted_rows,sorted_cols,sorted_vals, needed_vec_count, needed_vec_displ, needed_vec_index, to_send_vec_count, to_send_vec_displ, to_send_vals_index;
-        delete[] send_vec_vals, loc_result, row_offset, loc_row_offset, loc_mat_vals, loc_vec_vals, loc_col_inds;
-
-        sorted_vals = nullptr;
-        sorted_cols = nullptr;
-        sorted_vals = nullptr;
-        needed_vec_count = nullptr;
-        needed_vec_displ = nullptr;
-        needed_vec_index = nullptr;
-        to_send_vec_count =  nullptr;
-        to_send_vec_displ = nullptr;
-        to_send_vals_index = nullptr;
-        send_vec_vals = nullptr;
-        loc_result = nullptr;
-        row_offset = nullptr;
-        loc_row_offset = nullptr;
-        loc_mat_vals = nullptr;
-        loc_vec_vals = nullptr;
-        loc_col_inds = nullptr;
-
-        // ofstream out_file;
-        // out_file.open("./results/mpi_result.txt");
+        ofstream out_file;
+        out_file.open("./results/mpi_result_2.txt");
         for(int i=0;i<no_rows;i++)
         {
-            cout << glob_result[i] << endl;
+            out_file << glob_result[i] << endl;
         }
-        // out_file.close();
+        out_file.close();
      
         delete[] glob_result;
         glob_result = nullptr;
