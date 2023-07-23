@@ -61,6 +61,8 @@ __global__ void calc(double *res, double *mat, double *vec, int *row_offset, int
 			block_sum[threadIdx.x] += mat[j] * vec[col_inds[j]];
 		}
 		
+		//substitute below code by parallel reduction using __shfl_down_sync() in each warp
+		
 		if(lane < 16) block_sum[threadIdx.x] += block_sum[threadIdx.x + 16];
         __syncwarp();
 		if(lane < 8) block_sum[threadIdx.x] += block_sum[threadIdx.x + 8];
@@ -77,6 +79,35 @@ __global__ void calc(double *res, double *mat, double *vec, int *row_offset, int
 			res[row] = block_sum[threadIdx.x];
 		}
 	}
+}
+
+__global__ void calc(double *res, double *mat, double *vec, int *row_offset, int *col_inds, int no_rows)
+{
+	extern __shared__ double block_sum[];
+    int tid =  blockDim.x * blockIdx.x + threadIdx.x;
+    int warp_id = tid/32;
+    int row = warp_id;
+
+    int lane = tid & 31;
+
+    if(row < no_rows)
+    {
+        block_sum[threadIdx.x] = 0; 
+        for(int j=row_offset[row]+lane; j< row_offset[row+1]; j += 32)
+        {
+            block_sum[threadIdx.x] += mat[j] * vec[col_inds[j]];
+        }
+        
+        //reduce sum of each warp to its corresp row using __shfl_down_sync();
+        for(int i=warpSize/2 ; i>0; i /= 2)
+        {
+            block_sum[threadIdx.x] += __shfl_down_sync(0xfffffff,block_sum[threadIdx.x],i);
+        }
+
+        if(lane == 0) res[row] = block_sum[threadIdx.x];
+
+    }
+	
 }
 
 int main(int argc, char **argv)
