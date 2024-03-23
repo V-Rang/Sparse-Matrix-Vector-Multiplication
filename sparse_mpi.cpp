@@ -7,7 +7,7 @@
 #include<algorithm>
 #include<random>
 #include<chrono>
-#include<windows.h>
+// #include<windows.h>
 #include <cstdio>
 #include<mpi.h>
 #include<ctype.h>
